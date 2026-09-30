@@ -44,6 +44,35 @@ the `VPN_IFACE_PATTERN` fallback — interface names vary a lot on Windows and
 macOS always keeps a `utun0`-`utun3` around for iCloud/Continuity, so name
 matching alone is unreliable.
 
+### Finding your VPN_SUBNET_PREFIX
+
+Connect the VPN, then run:
+
+```sh
+npm run vpn-info
+```
+
+This lists every interface/address on the machine (cross-platform, no
+`ifconfig` vs `ipconfig` to remember) and, once `.env` exists, also prints
+what `isVpnConnected()` currently evaluates to with your settings. Run it
+once connected and once disconnected — the address that only shows up
+connected is the VPN's. Take its first two or three octets, with a trailing
+dot, e.g. an address of `10.151.4.7` becomes:
+
+```
+VPN_SUBNET_PREFIX=10.151.
+```
+
+Manual equivalents, if you'd rather not run the script:
+
+```sh
+# macOS
+ifconfig | grep -A1 utun | grep inet
+
+# Windows (PowerShell)
+Get-NetIPAddress | Where InterfaceAlias -match 'VPN|PPP|TAP'
+```
+
 Use SSH remotes, not `https://user:token@...` URLs — deploy output (including
 git's own messages) is echoed to Telegram, and a token embedded in the remote
 URL would end up in chat history. (Anything that *does* leak that pattern is
