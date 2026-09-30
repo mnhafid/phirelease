@@ -1,0 +1,12 @@
+{
+  "name": "phirelease-deploy-bot",
+  "version": "1.0.0",
+  "description": "Telegram-triggered deploy bot + VPN/internet scheduler for the offline release laptop",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "license": "UNLICENSED"
+}
