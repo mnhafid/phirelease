@@ -56,14 +56,19 @@ This lists every interface/address on the machine (cross-platform, no
 `ifconfig` vs `ipconfig` to remember) and, once `.env` exists, also prints
 what `isVpnConnected()` currently evaluates to with your settings. Run it
 once connected and once disconnected — the address that only shows up
-connected is the VPN's. Take its first two or three octets, with a trailing
-dot, e.g. an address of `10.151.4.7` becomes:
+connected is the VPN's.
 
-```
-VPN_SUBNET_PREFIX=10.151.
+Then write it into `.env` with:
+
+```sh
+npm run vpn-set-prefix                # interactive: pick from detected addresses
+npm run vpn-set-prefix -- 10.151.     # direct, if you already know it
 ```
 
-Manual equivalents, if you'd rather not run the script:
+This creates `.env` from `.env.example` if it doesn't exist yet, and either
+way just sets `VPN_SUBNET_PREFIX` — it doesn't touch anything else in the file.
+
+Manual equivalents, if you'd rather not run the scripts:
 
 ```sh
 # macOS
