@@ -1,3 +1,5 @@
 node_modules/
 .env
 *.log
+dumbpipe.exe
+relay/relay.env

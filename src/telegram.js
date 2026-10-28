@@ -20,7 +20,7 @@ export function makeBot(token) {
       }
       return true;
     } catch (err) {
-      console.error('telegram sendMessage error:', err.message);
+      console.error('telegram sendMessage error:', err.message, err.cause ?? '');
       return false;
     }
   }
@@ -42,7 +42,7 @@ export function makeBot(token) {
           if (update.message) Promise.resolve(onMessage(update.message)).catch((err) => console.error('onMessage error:', err));
         }
       } catch (err) {
-        console.error('telegram poll error:', err.message);
+        console.error('telegram poll error:', err.message, err.cause ?? ''); // fetch hides the real reason (DNS, TLS, timeout) in err.cause
         await new Promise((r) => setTimeout(r, 5000)); // ponytail: fixed backoff, add exponential if this ever gets rate-limited
       }
     }

@@ -1,10 +1,22 @@
 import { config } from './src/config.js';
 import { makeBot } from './src/telegram.js';
-import { deploy, DeployError } from './src/git-deploy.js';
+import { sendViaDumbpipe } from './src/notify.js';
+import { deploy, pullIfBehind, forcePushTo, DeployError } from './src/git-deploy.js';
 import { isVpnConnected, isInternetConnected } from './src/net-check.js';
 import { scheduleEvery20 } from './src/scheduler.js';
 
-const bot = makeBot(config.tgToken);
+// No Telegram token = alerts go to the log, and over dumbpipe to the
+// Telegram relay container if NOTIFY_TICKET is set; /deploy is unavailable. A failed dumbpipe send returns false so the
+// alert outbox below retries it later.
+const bot = config.tgToken
+  ? makeBot(config.tgToken)
+  : {
+      async sendMessage(_chatId, text) {
+        console.log(`[${new Date().toISOString()}] ${text}`);
+        return config.notifyTicket ? sendViaDumbpipe(config.dumbpipe, config.notifyTicket, text) : true;
+      },
+      pollUpdates() {},
+    };
 
 // If a remote URL has a token embedded (https://user:TOKEN@host/...), git can
 // echo it back on stdout/stderr — scrub before it ever reaches chat history.
@@ -23,7 +35,7 @@ async function handleMessage(message) {
   if (!match) return;
 
   if (deployInFlight) {
-    await bot.sendMessage(chatId, '⏳ a deploy is already running, wait for it to finish');
+    await bot.sendMessage(chatId, '⏳ a deploy or auto-pull is running, try again in a moment');
     return;
   }
 
@@ -91,6 +103,31 @@ async function checkConnectivity() {
   if (vpnChanged) await alert(vpnOk ? `✅ VPN back up (${stamp})` : `⚠️ VPN down (${stamp})`);
   if (netChanged) await alert(netOk ? `✅ internet back up (${stamp})` : `⚠️ internet down (${stamp})`);
 }
+
+// Sync: every WATCH_INTERVAL_MIN, fetch + fast-forward WATCH_REF, then
+// force-push it to SYNC_TARGET. Shares the deploy lock (a skipped tick just
+// catches up on the next one). Errors alert once per distinct message.
+let lastSyncError = null;
+async function sync() {
+  if (deployInFlight) return;
+  deployInFlight = true;
+  try {
+    const commits = await pullIfBehind({ repoDir: config.repoDir, watchRef: config.watchRef });
+    if (commits) await alert(redact(clip(`⬇️ pulled ${config.watchRef}\n\n${commits}`)));
+    if (config.syncTarget && (await forcePushTo({ repoDir: config.repoDir, watchRef: config.watchRef, target: config.syncTarget }))) {
+      await alert(`⬆️ force-pushed ${config.watchRef} → ${config.syncTarget}`);
+    }
+    lastSyncError = null;
+  } catch (err) {
+    const msg = err instanceof DeployError ? err.message : String(err);
+    if (msg !== lastSyncError) await alert(redact(clip(`⚠️ sync: ${msg}`)));
+    lastSyncError = msg;
+  } finally {
+    deployInFlight = false;
+  }
+}
+
+if (config.watchRef) setInterval(sync, config.watchIntervalMin * 60_000);
 
 scheduleEvery20(checkConnectivity);
 bot.pollUpdates(handleMessage);

@@ -30,6 +30,62 @@ and stops — nothing is pushed and `dotnet ef` never runs.
 Only `TG_CHAT_ID` can trigger it or receives scheduler alerts; every other
 chat is silently ignored.
 
+## Sync phi-dev → ict-dev (optional)
+
+Every `WATCH_INTERVAL_MIN` minutes the laptop checks GitLab (over the VPN) —
+no webhook, no server side:
+
+```
+git fetch <WATCH_REF> → ff-only pull → git push -f <SYNC_TARGET>
+```
+
+`.env` on the laptop:
+
+```
+WATCH_REF=origin/phi-dev
+SYNC_TARGET=ups/ict-dev
+WATCH_INTERVAL_MIN=1
+```
+
+- A merged MR is a new commit on `phi-dev`, so it's picked up on the next check.
+- Pull is `git merge --ff-only` only: wrong branch checked out, dirty tree,
+  or local commits not on the remote → alert once, touch nothing, push nothing.
+- The push sends the fetched `refs/remotes/<WATCH_REF>` commit, not local
+  `HEAD`, so local-only commits never reach `ict-dev`. It runs `ls-remote`
+  first and skips when already in sync; a failed push retries on the next run.
+- VPN down → fetch fails (`⚠️ sync: ...`, alerted once) and it catches up on
+  the first check after the VPN is back.
+
+## Alerts via relay container → Telegram (laptop can't reach Telegram)
+
+```
+Windows bot ──dumbpipe (iroh)──► sanjaya: docker relay (dumbpipe listen-tcp → telegram-relay.js) ──► Telegram
+```
+
+With `TG_TOKEN` blank and `NOTIFY_TICKET` set on the laptop, every alert —
+VPN down/up, internet down/up, `⬇️ pulled`, `⬆️ force-pushed`, sync errors —
+is sent to the relay, which posts it to Telegram. The relay only confirms
+delivery after Telegram accepted it; anything undelivered stays queued on the
+laptop (last 20) and is retried with the next alert. Everything is also
+written to `bot.log`.
+
+Deploy on sanjaya (needs Docker and outbound access to Telegram + GitHub):
+
+```sh
+rsync -a relay/ sanjaya:/opt/phi-relay/
+ssh sanjaya
+cd /opt/phi-relay
+printf 'TG_TOKEN=<token>\nTG_CHAT_ID=<chat id>\n' > relay.env
+docker compose up -d --build
+docker compose logs relay          # ticket -> NOTIFY_TICKET in the laptop's .env
+                                   # "using secret key <hex>" -> add IROH_SECRET=<hex> to relay.env,
+docker compose up -d               # then recreate so the ticket stays the same across restarts
+```
+
+`network_mode: host` lets iroh advertise sanjaya's own addresses so the laptop
+can connect directly; if that path is blocked it falls back to iroh's public
+relays, which both sides then need to reach.
+
 ## Setup (both OS)
 
 1. Create a bot with [@BotFather](https://t.me/BotFather), copy its token.
@@ -96,15 +152,27 @@ launchctl load ~/Library/LaunchAgents/com.phi.deploybot.plist
 
 `KeepAlive` restarts it if it crashes; `RunAtLoad` starts it at login.
 
-### Windows
+### Windows (no admin needed)
+
+`service/start-windows.ps1` runs the bot in a restart-forever loop, logging
+to `bot.log`. Start it at logon from the per-user
+Startup folder (Task Scheduler's "highest privileges" needs admin; this doesn't):
 
 ```powershell
-schtasks /create /tn "phirelease deploy bot" /tr "node C:\path\to\phirelease\index.js" /sc onlogon /rl highest
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath('Startup'))\phirelease.lnk")
+$s.TargetPath  = 'powershell.exe'
+$s.Arguments   = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\path\to\phirelease\service\start-windows.ps1"'
+$s.WindowStyle = 7   # minimized
+$s.Save()
 ```
 
-Runs at logon under your user, inheriting your normal user PATH (so `node`
-and `dotnet` just need to already be on it, unlike launchd). `schtasks`
-doesn't restart on crash — the bot's own poll loop retries transient
-failures, but if the process itself dies you'd need Task Scheduler's "restart
-on failure" option (set it via `taskschd.msc` if that matters to you) or a
-process supervisor.
+Runs from logon until logoff (a locked screen is fine). To stop:
+
+```powershell
+Get-CimInstance Win32_Process | ? { $_.CommandLine -match 'start-windows\.ps1|index\.js' } | % { Stop-Process -Id $_.ProcessId -Force }
+```
+
+No admin for the tools either: Node portable `.zip` from nodejs.org,
+PortableGit, `dotnet-install.ps1 -InstallDir $env:LOCALAPPDATA\dotnet`, and
+the `dumbpipe` release `.exe` — unzip into your user folder and add to the
+*user* PATH (`[Environment]::SetEnvironmentVariable('Path', ..., 'User')`).

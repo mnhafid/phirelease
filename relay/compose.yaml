@@ -1,0 +1,12 @@
+# On sanjaya:  docker compose up -d --build
+# Ticket:      docker compose logs relay | grep -i ticket   -> NOTIFY_TICKET on the laptop
+# relay.env:   TG_TOKEN=..., TG_CHAT_ID=..., and after the first run
+#              IROH_SECRET=<hex from "using secret key" in the logs> to keep the ticket stable
+services:
+  relay:
+    build: .
+    env_file: relay.env
+    # iroh advertises the host's own addresses (LAN/VPN/mesh), so the laptop
+    # can connect directly instead of only via iroh's public relays.
+    network_mode: host
+    restart: unless-stopped

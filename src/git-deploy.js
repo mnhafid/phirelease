@@ -19,6 +19,20 @@ export function today(d = new Date()) {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
 }
 
+function gitOpts(repoDir) {
+  return {
+    cwd: repoDir,
+    timeout: STEP_TIMEOUT_MS,
+    env: {
+      ...process.env,
+      // No TTY under launchd/schtasks — a credential prompt must fail fast,
+      // not hang until the step timeout while holding the deploy lock.
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes',
+    },
+  };
+}
+
 /**
  * fetch --all -> reset local phi-dev to <pushRemote>/phi-dev -> merge
  * release/<date> -> push -> dotnet ef update.
@@ -34,17 +48,7 @@ export async function deploy({ repoDir, releaseRemote, pushRemote, efArgs, dateA
   }
 
   const branch = `release/${date}`;
-  const opts = {
-    cwd: repoDir,
-    timeout: STEP_TIMEOUT_MS,
-    env: {
-      ...process.env,
-      // No TTY under launchd/schtasks — a credential prompt must fail fast,
-      // not hang until the step timeout while holding the deploy lock.
-      GIT_TERMINAL_PROMPT: '0',
-      GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes',
-    },
-  };
+  const opts = gitOpts(repoDir);
   const log = [];
 
   async function step(cmd, args) {
@@ -105,4 +109,63 @@ export async function deploy({ repoDir, releaseRemote, pushRemote, efArgs, dateA
   await step('dotnet', ['ef', 'database', 'update', ...efArgs]);
 
   return log.join('\n');
+}
+
+/**
+ * Fast-forward the checked-out branch to watchRef (e.g. "origin/phi-dev")
+ * when it has moved, i.e. a PR was merged. Returns the new first-parent
+ * commits (one line per merged PR), or null if already up to date.
+ * Never merges or resets: refuses on wrong branch, dirty tree, or local
+ * commits not on the remote.
+ */
+export async function pullIfBehind({ repoDir, watchRef }) {
+  const [remote, branch] = splitRef(watchRef);
+  const opts = gitOpts(repoDir);
+  const git = async (...args) => (await run('git', args, opts)).stdout.trim();
+  const isAncestor = (a, b) => run('git', ['merge-base', '--is-ancestor', a, b], opts).then(() => true, () => false);
+
+  try {
+    await git('fetch', remote, branch);
+  } catch (err) {
+    throw new DeployError(`git fetch ${remote} ${branch} failed: ${err.stderr?.trim() || err.message}`);
+  }
+  const remoteSha = await git('rev-parse', `refs/remotes/${watchRef}`);
+  if (await isAncestor(remoteSha, 'HEAD')) return null; // up to date (or local is ahead, e.g. mid-deploy)
+
+  const current = await git('rev-parse', '--abbrev-ref', 'HEAD');
+  if (current !== branch) throw new DeployError(`${watchRef} has new commits but ${current} is checked out, not ${branch} — not pulling`);
+  const dirty = await git('status', '--porcelain');
+  if (dirty) throw new DeployError(`${watchRef} has new commits but working tree is dirty — not pulling:\n${dirty}`);
+  if (!(await isAncestor('HEAD', remoteSha))) throw new DeployError(`local ${branch} has diverged from ${watchRef} — not pulling, fix by hand`);
+
+  const commits = await git('log', '--oneline', '--first-parent', `HEAD..${remoteSha}`);
+  await git('merge', '--ff-only', remoteSha);
+  return commits;
+}
+
+function splitRef(ref) {
+  const slash = ref.indexOf('/');
+  return [ref.slice(0, slash), ref.slice(slash + 1)];
+}
+
+/**
+ * Force-push the already-fetched watchRef commit to target ("ups/ict-dev").
+ * Pushes the remote-tracking ref, not HEAD, so stray local commits can never
+ * leak into the target. Compares first, so it's a cheap no-op when in sync —
+ * and a failed push is retried on the next trigger instead of being forgotten.
+ * Returns true if it pushed.
+ */
+export async function forcePushTo({ repoDir, watchRef, target }) {
+  const [remote, branch] = splitRef(target);
+  const opts = gitOpts(repoDir);
+  const git = async (...args) => (await run('git', args, opts)).stdout.trim();
+  try {
+    const sha = await git('rev-parse', `refs/remotes/${watchRef}`);
+    const current = (await git('ls-remote', remote, `refs/heads/${branch}`)).split(/\s/)[0];
+    if (current === sha) return false;
+    await git('push', '--force', remote, `${sha}:refs/heads/${branch}`);
+    return true;
+  } catch (err) {
+    throw new DeployError(`force-push to ${target} failed: ${err.stderr?.trim() || err.message}`);
+  }
 }
