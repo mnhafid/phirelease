@@ -3,7 +3,12 @@
 // forwarded to Telegram. The connection is closed cleanly only after Telegram
 // accepted the message, so the bot's `dumbpipe connect` exits 0; otherwise
 // it's reset and the bot keeps the alert queued for a retry.
-import { createServer } from 'node:net';
+import { createServer, setDefaultAutoSelectFamily } from 'node:net';
+
+// Node's happy-eyeballs gives each address only 250 ms before moving on; on a
+// slow path to Telegram (>250 ms handshake) every attempt is abandoned and
+// fetch fails with ETIMEDOUT even though curl connects fine. Wait normally.
+setDefaultAutoSelectFamily(false);
 
 const { TG_TOKEN, TG_CHAT_ID, PORT = '7879', TG_API = 'https://api.telegram.org' } = process.env;
 if (!TG_TOKEN || !TG_CHAT_ID) throw new Error('TG_TOKEN and TG_CHAT_ID are required');

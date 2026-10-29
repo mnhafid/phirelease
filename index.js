@@ -1,4 +1,9 @@
+import { setDefaultAutoSelectFamily } from 'node:net';
 import { config } from './src/config.js';
+
+// Same 250 ms happy-eyeballs cutoff as relay/telegram-relay.js: on slow links
+// it makes fetch (internet check, Telegram) fail with ETIMEDOUT. Wait normally.
+setDefaultAutoSelectFamily(false);
 import { makeBot } from './src/telegram.js';
 import { sendViaDumbpipe } from './src/notify.js';
 import { deploy, pullIfBehind, forcePushTo, DeployError } from './src/git-deploy.js';
